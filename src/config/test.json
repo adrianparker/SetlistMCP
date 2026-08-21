@@ -1,5 +1,6 @@
 {
   "level": "info",
   "logToFile": false,
-  "consoleLogLevel": "warn"
+  "consoleLogLevel": "error",
+  "consoleToStderr": true
 }
