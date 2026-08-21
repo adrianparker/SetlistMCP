@@ -6,6 +6,12 @@ import { readFile } from 'fs/promises'
 let loggerInstance
 
 /**
+ * Every winston level. Used to route the whole console transport to stderr, since
+ * winston's default only sends 'error' there.
+ */
+const ALL_LEVELS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']
+
+/**
  * Loads the logging configuration for the specified environment.
  *
  * @param {string} [env] - The environment name (e.g., 'development', 'production').
@@ -41,6 +47,65 @@ function getMonthlyLogFilePath (basePath) {
 }
 
 /**
+ * Builds the console transport.
+ *
+ * Under the MCP stdio transport, stdout is the JSON-RPC channel and a single log line
+ * on it corrupts the protocol stream. When the config sets consoleToStderr, every
+ * level is routed to stderr, including the ones winston would normally send to stdout.
+ * Decided here at construction rather than patched afterwards, so there is no window
+ * in which a startup warning can reach stdout.
+ *
+ * @param {Object} [config] - The logging configuration, if one was found.
+ * @returns {winston.transports.Console} The configured console transport.
+ */
+function buildConsoleTransport (config) {
+  return new winston.transports.Console({
+    level: (config && config.consoleLogLevel ? config.consoleLogLevel : 'debug'),
+    stderrLevels: (config && config.consoleToStderr) ? ALL_LEVELS : ['error'],
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.printf(({ level, message }) => `[${level}]: ${message}`)
+    )
+  })
+}
+
+/**
+ * Resolves a configured log file path against this module rather than the working
+ * directory. An MCP client spawns the server from an arbitrary cwd, so a relative
+ * path would scatter log files into whichever repo the client happened to start in.
+ *
+ * @param {string} basePath - The configured log file path (e.g. logs/app.log)
+ * @returns {string} An absolute path, with the current year and month applied.
+ */
+function resolveLogFilePath (basePath) {
+  return path.resolve(import.meta.dirname, '..', getMonthlyLogFilePath(basePath))
+}
+
+/**
+ * Routes an already-built logger's console output to stderr.
+ *
+ * Belt and braces alongside the consoleToStderr config: if a logger was somehow
+ * created without it, this still protects the JSON-RPC channel before the server
+ * starts serving.
+ *
+ * @param {winston.Logger} logger - The logger to fix up.
+ * @returns {winston.Logger} The same logger, for chaining.
+ */
+function redirectConsoleLoggingToStderr (logger) {
+  const consoleTransports = logger.transports.filter(t => t instanceof winston.transports.Console)
+  consoleTransports.forEach(t => logger.remove(t))
+  logger.add(new winston.transports.Console({
+    level: consoleTransports[0] ? consoleTransports[0].level : 'debug',
+    stderrLevels: ALL_LEVELS,
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.printf(({ level, message }) => `[${level}]: ${message}`)
+    )
+  }))
+  return logger
+}
+
+/**
  * Creates and returns a singleton Winston logger instance configured for the specified environment.
  *
  * @param {string} [env] - The environment name (e.g., 'development', 'production').
@@ -52,18 +117,10 @@ async function createLogger (env) {
   }
   const config = await loadConfig(env)
 
-  const transports = [
-    new winston.transports.Console({
-      level: (config && config.consoleLogLevel ? config.consoleLogLevel : 'debug'),
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf(({ level, message }) => `[${level}]: ${message}`)
-      )
-    })
-  ]
+  const transports = [buildConsoleTransport(config)]
   if (config) {
     if (config.logToFile && config.logFilePath) {
-      const monthlyLogFilePath = getMonthlyLogFilePath(config.logFilePath)
+      const monthlyLogFilePath = resolveLogFilePath(config.logFilePath)
       transports.push(
         new winston.transports.File({
           filename: monthlyLogFilePath,
@@ -82,7 +139,7 @@ async function createLogger (env) {
       transports
     })
     if (config.logToFile && config.logFilePath) {
-      loggerInstance.debug(`Logging to file: ${getMonthlyLogFilePath(config.logFilePath)}`)
+      loggerInstance.debug(`Logging to file: ${resolveLogFilePath(config.logFilePath)}`)
     }
   } else {
     loggerInstance = winston.createLogger({
@@ -95,4 +152,4 @@ async function createLogger (env) {
   return loggerInstance
 }
 
-export { createLogger }
+export { buildConsoleTransport, createLogger, redirectConsoleLoggingToStderr, resolveLogFilePath }
