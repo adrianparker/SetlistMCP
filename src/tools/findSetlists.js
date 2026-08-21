@@ -1,9 +1,13 @@
 import * as z from 'zod'
-import { daysBetween, yearOf } from '../services/dates.js'
+import { daysBetween, fromApiDate, yearOf } from '../services/dates.js'
 import { summariseSetlist } from '../services/setlistParser.js'
 import { describeError, errorResult, textResult } from './toolResult.js'
 
 const TOOL_NAME = 'find_setlists'
+
+// Enough to reach any date within a year for even a heavily touring artist, without
+// letting one search burn an unreasonable share of the request budget.
+const MAX_PAGES = 4
 
 const FIND_SETLISTS_INPUT = z.object({
   artist: z.string().min(1)
@@ -95,8 +99,6 @@ function buildFindSetlistsTool ({ musicBrainz, setlistFm, logger }) {
    */
   async function handler (args) {
     const { artist, artistMbid, city, date, countryCode, page = 1 } = args
-    // A date implies its year; searching the year rather than the exact day is what
-    // makes a misremembered date recoverable without extra requests.
     const year = date ? yearOf(date) : (args.year ?? null)
 
     try {
@@ -111,29 +113,13 @@ function buildFindSetlistsTool ({ musicBrainz, setlistFm, logger }) {
         )
       }
 
-      let broadened = false
-      let response = await setlistFm.searchSetlists({
-        artistMbid: resolved.mbid,
-        cityName: city,
-        countryCode,
-        year: year ?? undefined,
-        page
+      const found = await search({
+        setlistFm, logger, mbid: resolved.mbid, city, countryCode, date, year, page
       })
 
-      // setlist.fm city names and human memory disagree often enough - suburb versus
-      // city, "Brooklyn" versus "New York" - to be worth one retry without the city.
-      if (isEmpty(response) && city) {
-        logger?.info(`${TOOL_NAME}: no matches for city "${city}", retrying without it`)
-        broadened = true
-        response = await setlistFm.searchSetlists({
-          artistMbid: resolved.mbid,
-          countryCode,
-          year: year ?? undefined,
-          page
-        })
-      }
-
-      const setlists = rank(response.setlist ?? [], date, broadened ? city : null)
+      const setlists = rank(found.setlists, date, found.broadened ? city : null)
+      const response = { total: found.total, page: found.page }
+      const broadened = found.broadened
       const payload = {
         artist: {
           name: resolved.name,
@@ -166,12 +152,108 @@ function buildFindSetlistsTool ({ musicBrainz, setlistFm, logger }) {
 }
 
 /**
- * @param {Object} response - A setlist.fm search envelope.
+ * Finds candidate setlists, cheapest and most precise strategy first.
+ *
+ * When a date is known, ask setlist.fm for exactly that date. It is one request and
+ * it cannot be defeated by pagination - which matters more than it sounds. setlist.fm
+ * returns 20 results per page, newest first, and a prolific artist blows straight
+ * through that: Prince played 42 shows in London in 2007, so a year search returns
+ * only September and late August on page 1. A gig on 17 August is real, findable, and
+ * completely invisible to a year-only search.
+ *
+ * Only when the exact date finds nothing do we widen to the year, which is what makes
+ * a misremembered date recoverable.
+ *
+ * @param {Object} options
+ * @returns {Promise<Object>} { setlists, total, page, broadened, exactDateQueried }
+ * @private
+ */
+async function search ({ setlistFm, logger, mbid, city, countryCode, date, year, page }) {
+  if (date) {
+    // Deliberately without cityName: an artist plays one gig a day, so artist plus
+    // date is already selective, and leaving the city out means a slightly wrong city
+    // ("Brooklyn" for "New York") cannot zero out an otherwise perfect match.
+    const exact = await setlistFm.searchSetlists({ artistMbid: mbid, date, page: 1 })
+    if (!isEmpty(exact)) {
+      logger?.info(`${TOOL_NAME}: exact date match for ${date}`)
+      return {
+        setlists: exact.setlist,
+        total: exact.total ?? exact.setlist.length,
+        page: 1,
+        broadened: false,
+        exactDateQueried: true
+      }
+    }
+    logger?.info(`${TOOL_NAME}: nothing on ${date}, widening to ${year}`)
+  }
+
+  const params = { artistMbid: mbid, countryCode, year: year ?? undefined }
+  const withCity = await collect(setlistFm, { ...params, cityName: city }, date, page)
+  if (!isEmpty(withCity)) {
+    return { ...withCity, broadened: false, exactDateQueried: Boolean(date) }
+  }
+
+  // setlist.fm city names and human memory disagree often enough - suburb versus
+  // city, "Brooklyn" versus "New York" - to be worth one retry without the city.
+  if (city) {
+    logger?.info(`${TOOL_NAME}: no matches for city "${city}", retrying without it`)
+    const broadened = await collect(setlistFm, params, date, page)
+    return { ...broadened, broadened: true, exactDateQueried: Boolean(date) }
+  }
+
+  return { ...withCity, broadened: false, exactDateQueried: Boolean(date) }
+}
+
+/**
+ * Fetches a year's setlists, paging far enough to reach the requested date.
+ *
+ * Results come back newest first, so once a page's oldest entry is on or before the
+ * target date, the neighbourhood around that date has been covered and paging can
+ * stop. Without this, a busy year buries the target date beyond page 1.
+ *
+ * @param {Object} setlistFm - The setlist.fm client.
+ * @param {Object} params - Search parameters.
+ * @param {string|null} date - The requested ISO date, if any.
+ * @param {number} page - The caller's requested page.
+ * @returns {Promise<Object>} { setlists, total, page }
+ * @private
+ */
+async function collect (setlistFm, params, date, page) {
+  // An explicit page request is the model paginating deliberately; honour it as-is.
+  if (!date || page !== 1) {
+    const single = await setlistFm.searchSetlists({ ...params, page })
+    return { setlists: single.setlist ?? [], total: single.total ?? 0, page }
+  }
+
+  const setlists = []
+  let total = 0
+
+  for (let current = 1; current <= MAX_PAGES; current += 1) {
+    const response = await setlistFm.searchSetlists({ ...params, page: current })
+    const batch = response.setlist ?? []
+    total = response.total ?? total
+    setlists.push(...batch)
+
+    if (batch.length === 0 || setlists.length >= total) {
+      break
+    }
+    const oldest = fromApiDate(batch[batch.length - 1]?.eventDate)
+    if (oldest && oldest <= date) {
+      break
+    }
+  }
+
+  return { setlists, total, page: 1 }
+}
+
+/**
+ * @param {Object} response - A setlist.fm search envelope, or a collect() result.
  * @returns {boolean} True if it carried no setlists.
  * @private
  */
 function isEmpty (response) {
-  return !response?.setlist || response.setlist.length === 0
+  const list = response?.setlist ?? response?.setlists
+  return !list || list.length === 0
 }
 
 /**

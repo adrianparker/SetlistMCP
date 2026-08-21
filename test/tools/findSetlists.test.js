@@ -61,16 +61,36 @@ describe('find_setlists', () => {
       await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
 
       expect(musicBrainz.searchArtist.calledWith('The Cure')).to.be.true
-      expect(setlistFm.searchSetlists.firstCall.args[0]).to.include({
-        artistMbid: 'mbid-cure',
-        cityName: 'Wellington'
-      })
+      expect(setlistFm.searchSetlists.firstCall.args[0].artistMbid).to.equal('mbid-cure')
     })
 
-    it('should search the year rather than the exact date', async () => {
+    it('should query the exact date first when one is given', async () => {
       await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
 
-      expect(setlistFm.searchSetlists.firstCall.args[0].year).to.equal(1992)
+      expect(setlistFm.searchSetlists.firstCall.args[0].date).to.equal('1992-08-13')
+    })
+
+    it('should take just one search when the exact date hits', async () => {
+      await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
+
+      expect(setlistFm.searchSetlists.calledOnce).to.be.true
+    })
+
+    it('should omit the city from the exact-date query, so a wrong city cannot hide a match', async () => {
+      await handler({ artist: 'The Cure', city: 'Lower Hutt', date: '1992-08-13' })
+
+      expect(setlistFm.searchSetlists.firstCall.args[0].cityName).to.equal(undefined)
+    })
+
+    it('should search the year when only a year is given', async () => {
+      setlistFm.searchSetlists.resetHistory()
+
+      await handler({ artist: 'The Cure', city: 'Wellington', year: 1992 })
+
+      expect(setlistFm.searchSetlists.firstCall.args[0]).to.include({
+        year: 1992,
+        cityName: 'Wellington'
+      })
       expect(setlistFm.searchSetlists.firstCall.args[0].date).to.equal(undefined)
     })
 
@@ -165,6 +185,7 @@ describe('find_setlists', () => {
 
   describe('city broadening', () => {
     it('should retry without the city when the city search finds nothing', async () => {
+      // Only a year, so the flow is year+city then year alone
       setlistFm.searchSetlists.onFirstCall().resolves({ setlist: [], total: 0, page: 1 })
       setlistFm.searchSetlists.onSecondCall().resolves({
         setlist: [setlistFixture({ id: 'abc123', eventDate: '13-08-1992', city: 'Lower Hutt' })],
@@ -172,7 +193,7 @@ describe('find_setlists', () => {
         page: 1
       })
 
-      const result = await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
+      const result = await handler({ artist: 'The Cure', city: 'Wellington', year: 1992 })
 
       expect(setlistFm.searchSetlists.calledTwice).to.be.true
       expect(setlistFm.searchSetlists.secondCall.args[0].cityName).to.equal(undefined)
@@ -183,7 +204,7 @@ describe('find_setlists', () => {
     it('should broaden at most once', async () => {
       setlistFm.searchSetlists.resolves({ setlist: [], total: 0, page: 1 })
 
-      await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
+      await handler({ artist: 'The Cure', city: 'Wellington', year: 1992 })
 
       expect(setlistFm.searchSetlists.calledTwice).to.be.true
     })
@@ -191,9 +212,24 @@ describe('find_setlists', () => {
     it('should not broaden when no city was given', async () => {
       setlistFm.searchSetlists.resolves({ setlist: [], total: 0, page: 1 })
 
-      await handler({ artist: 'The Cure', date: '1992-08-13' })
+      await handler({ artist: 'The Cure', year: 1992 })
 
       expect(setlistFm.searchSetlists.calledOnce).to.be.true
+    })
+
+    it('should fall back to the year when the exact date finds nothing', async () => {
+      setlistFm.searchSetlists.onFirstCall().resolves({ setlist: [], total: 0, page: 1 })
+      setlistFm.searchSetlists.onSecondCall().resolves({
+        setlist: [setlistFixture({ id: 'nearby', eventDate: '14-08-1992' })],
+        total: 1,
+        page: 1
+      })
+
+      const result = await handler({ artist: 'The Cure', city: 'Wellington', date: '1992-08-13' })
+
+      expect(setlistFm.searchSetlists.firstCall.args[0].date).to.equal('1992-08-13')
+      expect(setlistFm.searchSetlists.secondCall.args[0].year).to.equal(1992)
+      expect(result.structuredContent.setlists[0].id).to.equal('nearby')
     })
 
     it('should prefer city substring matches once broadened', async () => {
@@ -210,6 +246,85 @@ describe('find_setlists', () => {
       const result = await handler({ artist: 'The Cure', city: 'Wellington', year: 1992 })
 
       expect(result.structuredContent.setlists.map(s => s.id)).to.deep.equal(['wellington'])
+    })
+  })
+
+  describe('prolific artists (regression: Prince, London, 2007)', () => {
+    /**
+     * Prince played 42 shows in London in 2007. setlist.fm returns 20 per page,
+     * newest first, so a year search returns only September and late August on page
+     * one - a real 17 August gig is invisible to it. Searching the exact date first
+     * finds it in one request; the paging below is the safety net for when the
+     * remembered date is also wrong.
+     */
+    function page (dates, total) {
+      return {
+        setlist: dates.map(eventDate => setlistFixture({ id: `id-${eventDate}`, eventDate, city: 'London' })),
+        total,
+        page: 1
+      }
+    }
+
+    it('should find a gig buried past page one by querying the exact date', async () => {
+      setlistFm.searchSetlists.resolves(page(['17-08-2007'], 1))
+
+      const result = await handler({ artist: 'Prince', city: 'London', date: '2007-08-17' })
+
+      expect(setlistFm.searchSetlists.calledOnce).to.be.true
+      expect(result.structuredContent.setlists[0]).to.include({
+        eventDate: '2007-08-17',
+        exactDateMatch: true
+      })
+    })
+
+    it('should page through the year until it reaches the requested date', async () => {
+      setlistFm.searchSetlists.onCall(0).resolves({ setlist: [], total: 0, page: 1 })
+      // Page one is all September; the target date is older, so it must keep paging
+      setlistFm.searchSetlists.onCall(1).resolves(page(['22-09-2007', '01-09-2007'], 4))
+      setlistFm.searchSetlists.onCall(2).resolves(page(['28-08-2007', '16-08-2007'], 4))
+
+      const result = await handler({ artist: 'Prince', city: 'London', date: '2007-08-17' })
+
+      expect(setlistFm.searchSetlists.callCount).to.equal(3)
+      expect(result.structuredContent.setlists[0].eventDate).to.equal('2007-08-16')
+    })
+
+    it('should stop paging once the page reaches past the requested date', async () => {
+      setlistFm.searchSetlists.onCall(0).resolves({ setlist: [], total: 0, page: 1 })
+      setlistFm.searchSetlists.onCall(1).resolves(page(['22-09-2007', '16-08-2007'], 40))
+
+      await handler({ artist: 'Prince', city: 'London', date: '2007-08-17' })
+
+      // One exact-date attempt plus one year page: the page already spans the date
+      expect(setlistFm.searchSetlists.callCount).to.equal(2)
+    })
+
+    it('should stop paging once every result has been collected', async () => {
+      setlistFm.searchSetlists.onCall(0).resolves({ setlist: [], total: 0, page: 1 })
+      setlistFm.searchSetlists.onCall(1).resolves(page(['22-09-2007', '20-09-2007'], 2))
+
+      await handler({ artist: 'Prince', city: 'London', date: '2007-08-17' })
+
+      expect(setlistFm.searchSetlists.callCount).to.equal(2)
+    })
+
+    it('should cap paging so one search cannot drain the request budget', async () => {
+      setlistFm.searchSetlists.onCall(0).resolves({ setlist: [], total: 0, page: 1 })
+      // Every page stays newer than the target, so only the cap stops it
+      setlistFm.searchSetlists.resolves(page(['22-09-2007', '20-09-2007'], 500))
+
+      await handler({ artist: 'Prince', city: 'London', date: '2007-08-17' })
+
+      expect(setlistFm.searchSetlists.callCount).to.be.at.most(6)
+    })
+
+    it('should honour an explicit page request without paging on top of it', async () => {
+      setlistFm.searchSetlists.resolves(page(['22-09-2007'], 40))
+
+      await handler({ artist: 'Prince', city: 'London', year: 2007, page: 2 })
+
+      expect(setlistFm.searchSetlists.calledOnce).to.be.true
+      expect(setlistFm.searchSetlists.firstCall.args[0].page).to.equal(2)
     })
   })
 
