@@ -1,0 +1,6 @@
+{
+  "level": "info",
+  "logToFile": true,
+  "logFilePath": "logs/app.log",
+  "consoleLogLevel": "info"
+}

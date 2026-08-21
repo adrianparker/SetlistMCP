@@ -1,0 +1,5 @@
+{
+  "level": "info",
+  "logToFile": false,
+  "consoleLogLevel": "warn"
+}
