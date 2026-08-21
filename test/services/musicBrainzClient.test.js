@@ -118,12 +118,13 @@ describe('MusicBrainzClient', () => {
       resolveArtists([
         { id: 'mbid-1', name: 'Villainy', score: 100 },
         { id: 'mbid-2', name: 'Villainy', score: 95, disambiguation: 'NZ rock band' },
+        // A different band, far enough behind not to be worth raising
         { id: 'mbid-3', name: 'The Villainy', score: 80 }
       ])
 
       const result = await client.searchArtist('Villainy')
 
-      expect(result.alternatives).to.have.lengthOf(2)
+      expect(result.alternatives).to.have.lengthOf(1)
       expect(result.alternatives[0]).to.deep.equal({
         name: 'Villainy',
         mbid: 'mbid-2',
@@ -139,6 +140,26 @@ describe('MusicBrainzClient', () => {
       ])
 
       expect((await client.searchArtist('Villainy')).alternatives).to.deep.equal([])
+    })
+
+    it('should not offer alternatives that are far behind a decisive match', async () => {
+      // The real shape of a "Prince" search: a perfect match plus unrelated acts
+      resolveArtists([
+        { id: 'mbid-prince', name: 'Prince', score: 100 },
+        { id: 'mbid-bobby', name: 'Bobby Prince', score: 78, disambiguation: 'video game composer' },
+        { id: 'mbid-bonnie', name: 'Bonnie "Prince" Billy', score: 72 }
+      ])
+
+      expect((await client.searchArtist('Prince')).alternatives).to.deep.equal([])
+    })
+
+    it('should still offer alternatives when the match is genuinely ambiguous', async () => {
+      resolveArtists([
+        { id: 'mbid-1', name: 'Villainy', score: 100 },
+        { id: 'mbid-2', name: 'Villainy', score: 100, disambiguation: 'NZ rock band' }
+      ])
+
+      expect((await client.searchArtist('Villainy')).alternatives).to.have.lengthOf(1)
     })
 
     it('should cap the number of alternatives', async () => {

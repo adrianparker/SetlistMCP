@@ -4,6 +4,11 @@ const DEFAULT_BASE_URL = 'https://musicbrainz.org/ws/2'
 const DEFAULT_CONTACT = 'https://github.com/adrianparker/setlist-mcp'
 const ALTERNATIVE_SCORE_FLOOR = 70
 const MAX_ALTERNATIVES = 3
+// An alternative is only worth raising when it is nearly as good a match as the best
+// one. Searching "Prince" returns Bobby Prince and Bonnie "Prince" Billy in the
+// seventies against a perfect 100 - offering those as candidates invites the model to
+// retry with an MBID that is definitely wrong.
+const ALTERNATIVE_SCORE_MARGIN = 5
 
 /**
  * Resolves artist names to MusicBrainz IDs.
@@ -82,6 +87,7 @@ class MusicBrainzClient {
     }
 
     const [best, ...rest] = artists
+    const threshold = Math.max(ALTERNATIVE_SCORE_FLOOR, (best.score ?? 0) - ALTERNATIVE_SCORE_MARGIN)
     const result = {
       name: best.name,
       mbid: best.id,
@@ -91,7 +97,7 @@ class MusicBrainzClient {
       country: best.country ?? null,
       score: best.score ?? null,
       alternatives: rest
-        .filter(artist => (artist.score ?? 0) >= ALTERNATIVE_SCORE_FLOOR)
+        .filter(artist => (artist.score ?? 0) >= threshold)
         .slice(0, MAX_ALTERNATIVES)
         .map(artist => ({
           name: artist.name,
