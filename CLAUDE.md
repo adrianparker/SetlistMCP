@@ -105,6 +105,11 @@ guaranteed off-by-one.
 - MusicBrainz signals throttling with **503**, not 429
 - setlist.fm returns **404 when a search matches nothing**, not an empty collection.
   A 404 from `/setlist/{id}` is a real not-found and still throws
+- setlist.fm paginates at **20 per page, newest first**, and a prolific artist blows
+  straight through that — Prince played 42 shows in London in 2007. Any search
+  strategy that relies on a year's results fitting one page is broken; that bug hid a
+  real gig completely. `find_setlists` queries the exact date first for this reason,
+  and pages the year fallback until it reaches the target date
 - setlist.fm's JSON is XML-derived: a set with one song arrives as a bare object where
   a set with two arrives as an array. `setlistParser.js` handles both — don't
   "simplify" that away
