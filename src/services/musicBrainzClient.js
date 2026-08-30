@@ -28,6 +28,7 @@ class MusicBrainzClient {
    * @param {string} [options.version] - This server's version, for the User-Agent.
    * @param {number} [options.timeoutMs] - Per-request time budget.
    * @param {number} [options.limit=5] - How many candidates to request.
+   * @param {number} [options.maxAttempts] - Total attempts (including retries) per request.
    */
   constructor (logger, {
     limiter,
@@ -36,7 +37,8 @@ class MusicBrainzClient {
     contact,
     version = '0.0.0',
     timeoutMs = 10000,
-    limit = 5
+    limit = 5,
+    maxAttempts = 4
   } = {}) {
     this.logger = logger
     this.limiter = limiter
@@ -44,6 +46,7 @@ class MusicBrainzClient {
     this.baseUrl = baseUrl
     this.timeoutMs = timeoutMs
     this.limit = limit
+    this.maxAttempts = maxAttempts
 
     if (!contact) {
       logger?.warn('MUSICBRAINZ_CONTACT is not set; falling back to the repository URL. MusicBrainz asks for contact details in the User-Agent.')
@@ -122,7 +125,8 @@ class MusicBrainzClient {
       logger: this.logger,
       label: 'MusicBrainz',
       headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
-      timeoutMs: this.timeoutMs
+      timeoutMs: this.timeoutMs,
+      maxAttempts: this.maxAttempts
     })
   }
 }

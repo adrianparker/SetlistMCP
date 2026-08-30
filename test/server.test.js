@@ -44,10 +44,24 @@ describe('MCP server', () => {
   })
 
   describe('tools/list', () => {
-    it('should advertise both tools', async () => {
+    it('should advertise every registered tool', async () => {
       const { tools } = await client.listTools()
 
-      expect(tools.map(tool => tool.name).sort()).to.deep.equal(['find_setlists', 'get_setlist'])
+      expect(tools.map(tool => tool.name).sort()).to.deep.equal([
+        'find_artists',
+        'find_cities',
+        'find_setlists',
+        'find_venues',
+        'get_artist',
+        'get_artist_setlists',
+        'get_city',
+        'get_setlist',
+        'get_setlist_version',
+        'get_user_setlists',
+        'get_venue',
+        'get_venue_setlists',
+        'list_countries'
+      ])
     })
 
     it('should convert the zod input schema into JSON Schema', async () => {
@@ -68,7 +82,7 @@ describe('MCP server', () => {
       expect(findSetlists.inputSchema.properties.date.description).to.include('yyyy-MM-dd')
     })
 
-    it('should mark both tools read-only', async () => {
+    it('should mark every tool read-only', async () => {
       const { tools } = await client.listTools()
 
       tools.forEach(tool => {

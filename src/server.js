@@ -8,6 +8,17 @@ import { RateLimiter } from './services/rateLimiter.js'
 import { TtlCache } from './services/cache.js'
 import { buildFindSetlistsTool } from './tools/findSetlists.js'
 import { buildGetSetlistTool } from './tools/getSetlist.js'
+import { buildGetArtistTool } from './tools/getArtist.js'
+import { buildFindArtistsTool } from './tools/findArtists.js'
+import { buildGetArtistSetlistsTool } from './tools/getArtistSetlists.js'
+import { buildGetVenueTool } from './tools/getVenue.js'
+import { buildGetVenueSetlistsTool } from './tools/getVenueSetlists.js'
+import { buildFindVenuesTool } from './tools/findVenues.js'
+import { buildGetCityTool } from './tools/getCity.js'
+import { buildFindCitiesTool } from './tools/findCities.js'
+import { buildListCountriesTool } from './tools/listCountries.js'
+import { buildGetSetlistVersionTool } from './tools/getSetlistVersion.js'
+import { buildGetUserSetlistsTool } from './tools/getUserSetlists.js'
 
 const SERVER_NAME = 'setlist-mcp'
 const HOUR_MS = 3600000
@@ -19,7 +30,8 @@ const DEFAULTS = {
   setlistFmMinIntervalMs: 1100,
   setlistFmDailyLimit: 1300,
   musicBrainzMinIntervalMs: 1100,
-  timeoutMs: 10000
+  timeoutMs: 10000,
+  maxAttempts: 4
 }
 
 /**
@@ -63,21 +75,27 @@ async function createDependencies (env = process.env) {
   })
 
   const timeoutMs = numberFrom(env.HTTP_TIMEOUT_MS, DEFAULTS.timeoutMs)
+  const maxAttempts = numberFrom(env.HTTP_MAX_ATTEMPTS, DEFAULTS.maxAttempts)
 
   const musicBrainz = new MusicBrainzClient(logger, {
     limiter: musicBrainzLimiter,
     cache: new TtlCache({ ttlMs: 24 * HOUR_MS }),
     contact: env.MUSICBRAINZ_CONTACT,
     version,
-    timeoutMs
+    timeoutMs,
+    maxAttempts
   })
 
   const setlistFm = new SetlistFmClient(logger, {
     limiter: setlistFmLimiter,
     searchCache: new TtlCache({ ttlMs: HOUR_MS }),
     detailCache: new TtlCache({ ttlMs: 6 * HOUR_MS }),
+    // The country list is effectively static, so it's worth caching far longer than
+    // anything else here.
+    countriesCache: new TtlCache({ ttlMs: 7 * 24 * HOUR_MS }),
     apiKey: env.SETLISTFM_API_KEY,
-    timeoutMs
+    timeoutMs,
+    maxAttempts
   })
 
   if (!env.SETLISTFM_API_KEY) {
@@ -98,7 +116,18 @@ function createServer (deps) {
 
   const tools = [
     buildFindSetlistsTool(deps),
-    buildGetSetlistTool(deps)
+    buildGetSetlistTool(deps),
+    buildGetArtistTool(deps),
+    buildFindArtistsTool(deps),
+    buildGetArtistSetlistsTool(deps),
+    buildGetVenueTool(deps),
+    buildGetVenueSetlistsTool(deps),
+    buildFindVenuesTool(deps),
+    buildGetCityTool(deps),
+    buildFindCitiesTool(deps),
+    buildListCountriesTool(deps),
+    buildGetSetlistVersionTool(deps),
+    buildGetUserSetlistsTool(deps)
   ]
   tools.forEach(tool => server.registerTool(tool.name, tool.config, tool.handler))
 
