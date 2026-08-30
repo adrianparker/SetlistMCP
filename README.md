@@ -11,6 +11,14 @@ resolves the artist, searches setlist.fm, and reads back the songs in order.
   matching gigs with their setlist IDs, venues and song counts.
 - **`get_setlist`** — fetch one setlist in full: every song in order, grouped into
   sets and encores, with cover and guest-appearance notes.
+- **`get_setlist_version`** — fetch one historical edit of a setlist by version id.
+- **`get_artist`** / **`find_artists`** / **`get_artist_setlists`** — look up an
+  artist on setlist.fm directly, or browse everything they've played.
+- **`get_venue`** / **`find_venues`** / **`get_venue_setlists`** — look up a venue,
+  or browse everything played there.
+- **`get_city`** / **`find_cities`** — look up or search setlist.fm's city directory.
+- **`list_countries`** — the full list of countries setlist.fm supports.
+- **`get_user_setlists`** — the gigs a setlist.fm user has attended or edited.
 - **Forgiving about dates.** Searching covers the year around the date you give and
   ranks results by how close they are, so a misremembered day still finds the gig.
 - **Forgiving about artist names.** Names resolve through MusicBrainz, so minor
@@ -85,6 +93,7 @@ npx @modelcontextprotocol/inspector node src/index.js
 | `SETLISTFM_DAILY_LIMIT` | `1300` | Per-process request budget for setlist.fm. |
 | `MUSICBRAINZ_MIN_INTERVAL_MS` | `1100` | Minimum gap between MusicBrainz requests. |
 | `HTTP_TIMEOUT_MS` | `10000` | Per-request timeout. |
+| `HTTP_MAX_ATTEMPTS` | `4` | Total attempts per request, including retries on 429/502/503/504. |
 
 ## Rate limiting
 
@@ -101,8 +110,14 @@ runaway loop, not as compliance. The minimum interval is what actually protects 
 key: at 1.1s per request, reaching 1440 requests would take 26 minutes of continuous
 querying.
 
-Responses are cached in memory — artists for 24 hours, searches for 1 hour, setlist
-detail for 6 hours — so repeated questions about the same gig cost nothing.
+Responses are cached in memory — MusicBrainz artist lookups for 24 hours, setlist.fm
+searches and lists (including artist/venue/user setlists) for 1 hour, setlist.fm detail
+(artist, venue, city, setlist, setlist version) for 6 hours, and the country list —
+effectively static — for 7 days — so repeated questions about the same gig, artist or
+venue cost nothing. `list_countries` is the one tool that can make more than one
+request per call: the endpoint paginates at 20/page despite having no filters, so the
+first call walks every page (a handful of requests) and every call after that is a
+cache hit.
 
 ## Development
 
